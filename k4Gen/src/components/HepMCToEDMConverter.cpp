@@ -1,6 +1,7 @@
 #include "HepMCToEDMConverter.h"
 // HepMC
 #include "HepMC3/GenVertex.h"
+#include "HepMC3/Units.h"
 // std
 #include <unordered_map>
 // HepPDT
@@ -18,10 +19,16 @@ HepMCToEDMConverter::convert(std::shared_ptr<const HepMC3::GenParticle> hepmcPar
   // look up charge from pdg_id
   HepPDT::ParticleID particleID(hepmcParticle->pdg_id());
   edm_particle.setCharge(static_cast<float>(particleID.charge()));
+  // EDM4hep uses GeV and mm, a HepMC3 event (e.g. one read from a file) can also be in MeV or cm
+  const auto momentumUnit = hepmcParticle->parent_event()->momentum_unit();
+  const auto lengthUnit = hepmcParticle->parent_event()->length_unit();
   // convert momentum
   auto p = hepmcParticle->momentum();
+  HepMC3::Units::convert(p, momentumUnit, HepMC3::Units::GEV);
   edm_particle.setMomentum({p.px(), p.py(), p.pz()});
-  edm_particle.setMass(hepmcParticle->generated_mass());
+  double mass = hepmcParticle->generated_mass();
+  HepMC3::Units::convert(mass, momentumUnit, HepMC3::Units::GEV);
+  edm_particle.setMass(mass);
 
 #ifdef EDM4HEP_MCPARTICLE_HAS_HELICITY
   edm_particle.setHelicity(0);
@@ -35,23 +42,22 @@ HepMCToEDMConverter::convert(std::shared_ptr<const HepMC3::GenParticle> hepmcPar
 #endif
 
   // convert vertex info
-  // pos.t() is c*t in HepMC length units (mm); divide by c_light [mm/ns] to get time in ns
+  // pos.t() is c*t, converted to mm below; divide by c_light [mm/ns] to get time in ns
   static constexpr double c_light_mm_ns = 299.792458;
 
   auto prodVtx = hepmcParticle->production_vertex();
   auto endVtx  = hepmcParticle->end_vertex();
 
   if (prodVtx != nullptr) {
-    auto& pos = prodVtx->position();
+    auto pos = prodVtx->position();
+    HepMC3::Units::convert(pos, lengthUnit, HepMC3::Units::MM);
     edm_particle.setVertex({pos.x(), pos.y(), pos.z()});
-    // Beam particles have prodVtx at the origin (t=0); use end vertex time so the
-    // interaction time is correctly propagated to Geant4.
-    const double t = (pos.t() == 0.0 && endVtx != nullptr ? endVtx->position().t() : pos.t()) / c_light_mm_ns;
-    edm_particle.setTime(t);
+    edm_particle.setTime(pos.t() / c_light_mm_ns);
   }
 
   if (endVtx != nullptr) {
-    auto& pos = endVtx->position();
+    auto pos = endVtx->position();
+    HepMC3::Units::convert(pos, lengthUnit, HepMC3::Units::MM);
     edm_particle.setEndpoint({pos.x(), pos.y(), pos.z()});
   }
 
